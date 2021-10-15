@@ -1,0 +1,534 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+    <title>内核可观测性的新选择：Python + BCC</title>
+
+    <link rel="stylesheet" href="css/reset.css">
+    <link rel="stylesheet" href="css/reveal.css">
+    <link rel="stylesheet" href="css/theme/night.css">
+
+    <!-- Theme used for syntax highlighting of code -->
+    <link rel="stylesheet" href="lib/css/zenburn.css">
+
+    <!-- Printing and PDF exports -->
+    <script>
+        var link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.type = 'text/css';
+        link.href = window.location.search.match(/print-pdf/gi) ? 'css/print/pdf.css' : 'css/print/paper.css';
+        document.getElementsByTagName('head')[0].appendChild(link);
+    </script>
+</head>
+
+<body>
+    <div class="reveal">
+        <div class="slides">
+            <section>
+                <h3>内核可观测性的新选择：Python + BCC</h3>
+                <p>
+                    <small>by <a href="https://manjusaka.itscoder.com/">李者璈</a> / <a
+                            href="https://github.com/Zheaoli">@Manjusaka</a></small>
+                </p>
+            </section>
+            <section>
+                <h3>自我介绍</h3>
+                <ul>
+                    <li class="fragment">@TaiChi Graphics</li>
+                    <li class="fragment">热爱 Python， 但是日常工作却在写 Golang/Java</li>
+                    <li class="fragment">捕蛇者说主播，https://pythonhunter.org</li>
+                    <li class="fragment">微软 MVP</li>
+                    <li class="fragment">博客：https://manjusaka.itscoder.com</li>
+                </ul>
+            </section>
+            <section>
+                <h3>内核可观测性的新选择</h3>
+                <ul>
+                    <li class="fragment">内核的可观测性是什么？/li>
+                    <li class="fragment">现有技术手段的缺陷</li>
+                    <li class="fragment">Python + BCC</li>
+                </ul>
+            </section>
+            <section>
+                <h3>内核的可观测性是什么？</h3>
+            </section>
+            <section>
+                <p class="fragment">首先我们来思考一个问题，在什么情况下，我们需要和内核打交道</p>
+                <ul>
+                    <li class="fragment">1. 程序本身的运行，需要依赖系统内核</li>
+                    <li class="fragment">2. 程序中需要利用操作系统提供的 API （比如网络协议等）</li>
+                </ul>
+            </section>
+            <section>
+                <h3>还有吗？</h3>
+            </section>
+            <section>
+                <h3>来看这样两个场景</h3>
+                <ul>
+                    <li class="fragment">1. 我们要获取一个宿主机上所有向 192.168.8.1 这个地址发送 ICMP 包的进程的 PID</li>
+                    <li class="fragment">2. 我们监控一个进程的包重传/链接 RST 等事件</li>
+                    <li class="fragment">3. 我们需要监控宿主机上进程读取文件的延时</li>
+                </ul>
+            </section>
+            <section>
+                <p>这几个例子实际上都反应出了一个实际的需求：我们需要从内核中获取一些具体的指标来衡量一个应用程序的运行状态</p>
+            </section>
+            <section>
+                <p class="fragment">一句话来描述内核的可观测性</p>
+                <p class="fragment">从内核中获取不同指标用以监控的应用程序运行状态的能力</p>
+            </section>
+            <section>
+                <h3>现有的一些内核可观测性技术</h3>
+                <p class="fragment">内核会选择将一些基础指标通过虚拟文件的形式开放出来</p>
+                <ul>
+                    <li class="fragment">/proc/net/ 网络 Metric</ul>
+                    <li class="fragment">/proc/[pid]/stat 进程状态</li>
+                    <li class="fragment">etc.</li>
+                </ul>
+            </section>
+            <section>
+                <h3>现有的一些内核可观测性技术</h3>
+                <p class="fragment">内核现在已经给我们提供了一些内置的基础设施来提供可观测性能力</p>
+                <ul>
+                    <li class="fragment">kprobe（内核函数调用 Hook）</li>
+                    <li class="fragment">kretprobe（内核函数调用返回 Hook）</li>
+                    <li class="fragment">Tracepoint</li>
+                    <li class="fragment">etc.</li>
+                </ul>
+            </section>
+            <section>
+                <h3>现有的一些内核可观测性技术</h3>
+                <p class="fragment">同时社区/商业也提供了不少基于内核已有基础设施能力的工具</p>
+                <ul>
+                    <li class="fragment">RedHat 推出的 Systemtap（后 backport 到社区</li>
+                    <li class="fragment">etc.</li>
+                </ul>
+            </section>
+            <section>
+                <h3>现有技术手段的缺陷</h3>
+                <ul>
+                    <li class="fragment">1. 传统 Linux 的 metric 存在搜集难，在 Metric 聚合的过程中，损失了有意义的原始信息</li>
+                    <li class="fragment">2. 内核提供的 Kprobe, kretprobe 同样存在使用困难的问题</li>
+                    <li class="fragment">3. 第三方社区/公司推动的诸如 systemtap 这样的工具存在 vendor lock-in 的问题。同时也存在兼容性的问题</li>
+                </ul>
+            </section>
+            <section>
+                <h3>那，怎么办呢？</h3>
+            </section>
+            <section>
+                <h3>ebpf save the life！</h3>
+            </section>
+            <section>
+                <h3>eBPF简介</h3>
+                <p class="fragment">eBPF（Extended BPF）是一种高性能的网络编程语言，它可以用于网络监控、网络管理、网络安全、网络自维护等领域。</p>
+                <p class="fragment">一张图解析eBPF的概念：</p>
+                <img class="fragment" src="https://ebpf.io/static/overview-bf463455a5666fc3fb841b9240d588ff.png" width="450" height="300">
+            </section>
+            <section>
+                <h3>来看看一个简单的 ebpf 的例子</h3>
+            </section>
+            <section>
+                <pre><code code data-trim class="c">
+#include <linux/ptrace.h>
+#include <linux/version.h>
+#include <uapi/linux/bpf.h>
+#include <bpf/bpf_helpers.h>
+#include "trace_common.h"
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(key_size, sizeof(int));
+    __uint(value_size, sizeof(u32));
+    __uint(max_entries, 2);
+} my_map SEC(".maps");
+
+SEC("kprobe/" SYSCALL(sys_write))
+int bpf_prog1(struct pt_regs *ctx)
+{
+    struct S {
+        u64 pid;
+        u64 cookie;
+    } data;
+
+    data.pid = bpf_get_current_pid_tgid();
+    data.cookie = 0x12345678;
+
+    bpf_perf_event_output(ctx, &my_map, 0, &data, sizeof(data));
+
+    return 0;
+}
+
+char _license[] SEC("license") = "GPL";
+u32 _version SEC("version") = LINUX_VERSION_CODE;
+            </code></pre>
+        </section>
+        <section>
+            <pre><code code data-trim class="c">
+#include <stdio.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <time.h>
+#include <signal.h>
+#include <bpf/libbpf.h>
+
+static __u64 time_get_ns(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000000000ull + ts.tv_nsec;
+}
+
+static __u64 start_time;
+static __u64 cnt;
+
+#define MAX_CNT 100000ll
+
+static void print_bpf_output(void *ctx, int cpu, void *data, __u32 size)
+{
+    struct {
+        __u64 pid;
+        __u64 cookie;
+    } *e = data;
+
+    if (e->cookie != 0x12345678) {
+        printf("BUG pid %llx cookie %llx sized %d\n",
+                e->pid, e->cookie, size);
+        return;
+    }
+
+    cnt++;
+
+    if (cnt == MAX_CNT) {
+        printf("recv %lld events per sec\n",
+                MAX_CNT * 1000000000ll / (time_get_ns() - start_time));
+        return;
+    }
+}
+
+int main(int argc, char **argv)
+{
+    struct perf_buffer_opts pb_opts = {};
+    struct bpf_link *link = NULL;
+    struct bpf_program *prog;
+    struct perf_buffer *pb;
+    struct bpf_object *obj;
+    int map_fd, ret = 0;
+    char filename[256];
+    FILE *f;
+
+    snprintf(filename, sizeof(filename), "%s_kern.o", argv[0]);
+    obj = bpf_object__open_file(filename, NULL);
+    if (libbpf_get_error(obj)) {
+        fprintf(stderr, "ERROR: opening BPF object file failed\n");
+        return 0;
+    }
+
+    /* load BPF program */
+    if (bpf_object__load(obj)) {
+        fprintf(stderr, "ERROR: loading BPF object file failed\n");
+        goto cleanup;
+    }
+
+    map_fd = bpf_object__find_map_fd_by_name(obj, "my_map");
+    if (map_fd < 0) {
+        fprintf(stderr, "ERROR: finding a map in obj file failed\n");
+        goto cleanup;
+    }
+
+    prog = bpf_object__find_program_by_name(obj, "bpf_prog1");
+    if (libbpf_get_error(prog)) {
+        fprintf(stderr, "ERROR: finding a prog in obj file failed\n");
+        goto cleanup;
+    }
+
+    link = bpf_program__attach(prog);
+    if (libbpf_get_error(link)) {
+        fprintf(stderr, "ERROR: bpf_program__attach failed\n");
+        link = NULL;
+        goto cleanup;
+    }
+
+    pb_opts.sample_cb = print_bpf_output;
+    pb = perf_buffer__new(map_fd, 8, &pb_opts);
+    ret = libbpf_get_error(pb);
+    if (ret) {
+        printf("failed to setup perf_buffer: %d\n", ret);
+        return 1;
+    }
+
+    f = popen("taskset 1 dd if=/dev/zero of=/dev/null", "r");
+    (void) f;
+
+    start_time = time_get_ns();
+    while ((ret = perf_buffer__poll(pb, 1000)) >= 0 && cnt < MAX_CNT) {
+    }
+    kill(0, SIGINT);
+
+cleanup:
+    bpf_link__destroy(link);
+    bpf_object__close(obj);
+    return ret;
+}                        
+                </code></pre>
+            </section>
+            <section>
+                <h3>Origin eBPF 所面临的的问题</h3>
+                <ul>
+                    <li class="fragment">编写成本高</li>
+                    <li class="fragment">细节复杂</li>
+                </ul>
+            </section>
+            <section>
+                <h3>BCC Save the eBPF</h3>
+                <ul>
+                    <li class="fragment">提供了多语言的 Binding，对于 Python 的支持非常好</li>
+                    <li class="fragment">屏蔽了许多 Origin eBPF 的细节</li>
+                    <li class="fragment">提供了许多开箱即用的工具</li>
+                </ul>
+            </section>
+            <section>
+                <h3>一张图来展现 BCC 的优势</h3>
+                <img class="fragment" src="https://user-images.githubusercontent.com/7054676/137508186-0dd1d346-2407-47b1-a6c9-e92f8695dde7.png" width="800" height="600"/>
+            </section>
+            <section>
+                <h3>实际例子1: 我们要获取一个宿主机上所有向 192.168.8.1 这个地址发送 ICMP 包的进程的 PID</h3>
+                <pre><code class="python" code data-trim  >
+from bcc import BPF
+import ctypes
+
+bpf_text = """
+#include <linux/ptrace.h>
+#include <linux/sched.h>        /* For TASK_COMM_LEN */
+#include <linux/icmp.h>
+#include <linux/ip.h>
+#include <linux/netdevice.h>
+
+struct probe_icmp_sample {
+    u32 pid;
+    u32 daddress;
+    u32 saddress;
+};
+
+BPF_PERF_OUTPUT(probe_events);
+
+static inline unsigned char *custom_skb_network_header(const struct sk_buff *skb)
+{
+	return skb->head + skb->network_header;
+}
+
+static inline struct iphdr *get_iphdr_in_icmp(const struct sk_buff *skb)
+{
+    return (struct iphdr *)custom_skb_network_header(skb);
+}
+
+int probe_icmp(struct pt_regs *ctx, struct net *net, struct sock *sk, struct sk_buff *skb){
+    struct iphdr * ipdata=get_iphdr_in_icmp(skb);
+    if (ipdata->protocol!=1){
+        return 1;
+    }
+    u64 __pid_tgid = bpf_get_current_pid_tgid();
+    u32 __pid = __pid_tgid;
+    struct probe_icmp_sample __data = {0};
+    __data.pid = __pid;
+    u32 daddress;
+    u32 saddress;
+    bpf_probe_read(&daddress, sizeof(ipdata->daddr), &ipdata->daddr);
+    bpf_probe_read(&saddress, sizeof(ipdata->daddr), &ipdata->saddr);
+    __data.daddress=daddress;
+    __data.saddress=saddress;
+    probe_events.perf_submit(ctx, &__data, sizeof(__data));
+    return 0;
+}
+
+"""
+
+
+class IcmpSamples(ctypes.Structure):
+    _fields_ = [
+        ("pid", ctypes.c_uint32),
+        ("daddress", ctypes.c_uint32),
+        ("saddress", ctypes.c_uint32),
+    ]
+
+
+bpf = BPF(text=bpf_text)
+
+filters = {}
+
+
+def parse_ip_address(data):
+    results = [0, 0, 0, 0]
+    results[3] = data & 0xFF
+    results[2] = (data >> 8) & 0xFF
+    results[1] = (data >> 16) & 0xFF
+    results[0] = (data >> 24) & 0xFF
+    return ".".join([str(i) for i in results[::-1]])
+
+
+def print_icmp_event(cpu, data, size):
+    # event = b["probe_icmp_events"].event(data)
+    event = ctypes.cast(data, ctypes.POINTER(IcmpSamples)).contents
+    daddress = parse_ip_address(event.daddress)
+    print(
+        f"pid:{event.pid}, daddress:{daddress}, saddress:{parse_ip_address(event.saddress)}"
+    )
+
+
+bpf.attach_kprobe(event="ip_finish_output", fn_name="probe_icmp")
+
+bpf["probe_events"].open_perf_buffer(print_icmp_event)
+while 1:
+    try:
+        bpf.kprobe_poll()
+    except KeyboardInterrupt:
+        exit()
+
+                    </code></pre>
+            </section>
+            <section>
+                <h3>运行效果</h3>
+                <img width="1566" alt="CleanShot 2021-10-15 at 23 03 21@2x" src="https://user-images.githubusercontent.com/7054676/137509570-52fe0dc9-0f71-4b9f-a2ed-efac393d4e15.png">
+            </section>
+            <section>
+                <h3>实际例子2: 我们需要监控宿主机上进程读取文件的延时</h3>
+                <pre><code class="python" code data-trim  >
+from bcc import BPF
+from ctypes import c_ushort, c_int, c_ulonglong
+from time import sleep
+from sys import argv
+
+def usage():
+	print("USAGE: %s [interval [count]]" % argv[0])
+	exit()
+
+# arguments
+interval = 5
+count = -1
+if len(argv) > 1:
+	try:
+		interval = int(argv[1])
+		if interval == 0:
+			raise
+		if len(argv) > 2:
+			count = int(argv[2])
+	except:	# also catches -h, --help
+		usage()
+
+bcc = """
+#include <uapi/linux/ptrace.h>
+
+BPF_HASH(start, u32);
+BPF_HISTOGRAM(dist);
+
+int do_entry(struct pt_regs *ctx)
+{
+	u32 pid;
+	u64 ts, *val;
+
+	pid = bpf_get_current_pid_tgid();
+	ts = bpf_ktime_get_ns();
+	start.update(&pid, &ts);
+	return 0;
+}
+
+int do_return(struct pt_regs *ctx)
+{
+	u32 pid;
+	u64 *tsp, delta;
+
+	pid = bpf_get_current_pid_tgid();
+	tsp = start.lookup(&pid);
+
+	if (tsp != 0) {
+		delta = bpf_ktime_get_ns() - *tsp;
+		dist.increment(bpf_log2l(delta / 1000));
+		start.delete(&pid);
+	}
+
+	return 0;
+}
+
+"""
+
+# load BPF program
+b = BPF(src_file = "vfsreadlat.c")
+b.attach_kprobe(event="vfs_read", fn_name="do_entry")
+b.attach_kretprobe(event="vfs_read", fn_name="do_return")
+
+# header
+print("Tracing... Hit Ctrl-C to end.")
+
+# output
+loop = 0
+do_exit = 0
+while (1):
+	if count > 0:
+		loop += 1
+		if loop > count:
+			exit()
+	try:
+		sleep(interval)
+	except KeyboardInterrupt:
+		pass; do_exit = 1
+
+	print()
+	b["dist"].print_log2_hist("usecs")
+	b["dist"].clear()
+	if do_exit:
+		exit()
+                </code></pre>
+            </section>
+            <section>
+                <h3>实际效果</h3>
+                <img width="646" src="https://user-images.githubusercontent.com/7054676/137511356-0888fc3c-3c64-494d-a14f-4d737af22f83.png">
+            </section>
+            <section>
+                <h3>未来展望</h3>
+                <ul>
+                    <li class="fragment">eBPF 的稳定性会进一步提升</li>
+                    <li class="fragment">会有更多开箱即用的工具出现</li>
+                    <li class="fragment">会有更优良的封装</li>
+                </ul>
+            </section>
+            <section>
+                <h1 style="font-style: italic; font-family: 'IM FELL English';">Thanks!</h1>
+                <h2 style="font-style: italic; font-family: 'IM FELL English';">Q&amp;A</h2>
+            </section>
+            
+        </div>
+    </div>
+
+    <script src="js/reveal.js"></script>
+
+    <script>
+        // More info about config & dependencies:
+        // - https://github.com/hakimel/reveal.js#configuration
+        // - https://github.com/hakimel/reveal.js#dependencies
+        Reveal.initialize({
+            dependencies: [{
+                    src: 'plugin/markdown/marked.js'
+                },
+                {
+                    src: 'plugin/markdown/markdown.js'
+                },
+                {
+                    src: 'plugin/notes/notes.js',
+                    async: true
+                },
+                {
+                    src: 'plugin/highlight/highlight.js',
+                    async: true
+                }
+            ],
+            mouseWheel: true,
+            slideNumber: "c/t",
+            progress: true,
+        });
+    </script>
+</body>
+
+</html>
